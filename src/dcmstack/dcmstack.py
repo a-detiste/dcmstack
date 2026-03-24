@@ -10,6 +10,7 @@ try:
 except ImportError:
     from ordereddict import OrderedDict
 
+from .nifti_wrapper import NiftiWrapper
 import numpy as np
 import pydicom
 from pydicom.datadict import tag_for_keyword
@@ -25,9 +26,9 @@ with warnings.catch_warnings():
     warnings.simplefilter('ignore')
     from nibabel.nicom.dicomwrappers import wrapper_from_data
 
+from .globals import SORT_GUESSES
 from . import snd
-from .dcmmeta import DcmMetaExtension, NiftiWrapper
-from .utils import iteritems
+from .dcmmeta import DcmMetaExtension
 
 
 def make_key_regex_filter(exclude_res, force_include_res=None):
@@ -309,20 +310,6 @@ class DicomStack(object):
     If both time_order and vector_order are None, the time_order will be
     guessed based off the data sets.
     '''
-
-    SORT_GUESSES = (
-        'SND.DiffusionBValue',
-        'SND.EchoTime',
-        'SND.InversionTime',
-        'SND.RepetitionTime',
-        'SND.FlipAngle',
-        'SND.AcquisitionTimeStamp',
-        'AcquisitionNumber',
-        'InstanceNumber',
-    )
-    '''The meta data keywords used when trying to guess the sorting order.
-    Keys that come earlier in the list are given higher priority.'''
-
     OTHER_REQ_ATTRS = (
         'Rows',
         'Columns',
@@ -333,6 +320,8 @@ class DicomStack(object):
         'SharedFunctionalGroupsSequence',
         'PerFrameFunctionalGroupsSequence',
     )
+
+    SORT_GUESSES = SORT_GUESSES[:]
 
     def __init__(self, time_order=None, vector_order=None, meta_filter=None):
         if isinstance(time_order, str):
@@ -522,16 +511,14 @@ class DicomStack(object):
         #If the dirty flag is not set, return the cached value
         if not self._shape_dirty:
             return self._shape
-
+        self._guessed_order = None
         #We need at least one file in the stack
         n_files = len(self._files_info)
         if n_files == 0:
             raise InvalidStackError("No files in the stack")
-
         #Figure out number of files and slices per volume
         files_per_vol = len(self._slice_pos_vals)
         slice_positions = sorted(list(self._slice_pos_vals))
-
         #If more than one file per volume, check that slice spacing is equal
         if files_per_vol > 1:
             spacings = []
@@ -541,13 +528,11 @@ class DicomStack(object):
             avg_spacing = np.mean(spacings)
             if not np.allclose(avg_spacing, spacings, rtol=4e-2):
                 raise InvalidStackError("Slice spacings are not consistent")
-
         #Simple check for an incomplete stack
         if n_files % files_per_vol != 0:
             raise InvalidStackError("Number of files is not an even multiple "
                                     "of the number of unique slice positions.")
         num_volumes = n_files // files_per_vol
-
         #Figure out the number of vector components and time points
         num_vec_comps = len(self._vector_vals)
         if num_vec_comps > num_volumes:
@@ -556,7 +541,6 @@ class DicomStack(object):
             raise InvalidStackError("Number of volumes not an even multiple "
                                     "of the number of vector components.")
         num_time_points = num_volumes // num_vec_comps
-
         #If both sort keys are None try to guess
         if (num_volumes > 1 and self._time_order is None and
                 self._vector_order is None):
@@ -573,7 +557,6 @@ class DicomStack(object):
             if len(possible_orders) == 0:
                 raise InvalidStackError("Unable to guess key for sorting the "
                                         "fourth dimension")
-
             #Try out each possible sort order
             for time_order in possible_orders:
                 #Update sorting tuples
@@ -585,7 +568,6 @@ class DicomStack(object):
                                               curr_tuple[2]
                                              )
                                             )
-
                 #Check the order
                 try:
                     self._chk_order(slice_positions,
@@ -596,18 +578,19 @@ class DicomStack(object):
                 except InvalidStackError:
                     pass
                 else:
+                    self._guessed_order = DicomOrdering(time_order)
                     break
             else:
                 raise InvalidStackError("Unable to guess key for sorting the "
                                         "fourth dimension")
-        else: #If at least on sort key was specified, just check the order
+        else: 
+            # If at least one sort key was specified, just check the order
             self._chk_order(slice_positions,
                             files_per_vol,
                             num_volumes,
                             num_time_points,
                             num_vec_comps)
-
-        #Stack appears to be valid, build the shape tuple
+        # Stack appears to be valid, build the shape tuple
         file_shape = self._files_info[0][0].nii_img.shape
         vol_shape = list(file_shape)
         if files_per_vol > 1:
@@ -893,11 +876,11 @@ class DicomStack(object):
                             start_idx = vec_idx * data.shape[3]
                             end_idx = start_idx + data.shape[3]
                             meta = DcmMetaExtension.from_sequence(
-                                vol_meta[start_idx:end_idx], 3)
+                                vol_meta[start_idx:end_idx], 3
+                            )
                             vec_meta.append(meta)
                     else:
                         vec_meta = vol_meta
-
                     meta_ext = DcmMetaExtension.from_sequence(vec_meta, 4)
                 elif len(data.shape) == 4:
                     meta_ext = DcmMetaExtension.from_sequence(vol_meta, 3)
@@ -913,7 +896,19 @@ class DicomStack(object):
             meta_ext.slice_dim = slice_dim
             meta_ext.affine = nifti_header.get_best_affine()
             meta_ext.reorient_transform = reorient_transform
-
+            # Track which attributes were used to sort extra-spatial dimensions
+            extra_shape = meta_ext.shape[3:]
+            if extra_shape:
+                if extra_shape[0] != 1 and meta_ext.time_dim is None:
+                    ord = self._time_order
+                    if ord is None:
+                        ord = self._guessed_order
+                    if ord is not None:
+                        meta_ext.time_dim = ord.key
+                if len(extra_shape) == 2 and extra_shape[1] != 1:
+                    ord = self._vector_order
+                    if ord is not None:
+                        meta_ext.vector_dim = ord.key
             #Filter and embed the meta data
             meta_ext.filter_meta(self._meta_filter)
             nifti_header.extensions = Nifti1Extensions([meta_ext])
@@ -1025,7 +1020,7 @@ def parse_and_group(src_paths, group_by=DEFAULT_GROUP_KEYS, extractor=None,
 
     # Unpack sub results, using the canonical value for the close keys
     full_results = {}
-    for eq_key, sub_res_list in iteritems(results):
+    for eq_key, sub_res_list in results.items():
         for close_key, sub_res in sub_res_list:
             full_key = []
             eq_idx = 0
@@ -1093,7 +1088,7 @@ def parse_and_stack(src_paths, group_by=DEFAULT_GROUP_KEYS, extractor=None,
                               force,
                               warn_on_except)
 
-    for key, group in iteritems(results):
+    for key, group in results.items():
         results[key] = stack_group(group, warn_on_except, **stack_args)
 
     return results

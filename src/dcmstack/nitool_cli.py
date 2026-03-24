@@ -7,9 +7,11 @@ from __future__ import print_function
 
 import os, sys, argparse
 
+from .nifti_wrapper import NiftiWrapper
 import nibabel as nb
 
-from .dcmmeta import NiftiWrapper, DcmMetaExtension, MissingExtensionError
+from .dcmmeta import DcmMetaExtension
+from .nifti_wrapper import MissingExtensionError
 
 prog_descrip = """Work with extended Nifti files created by dcmstack"""
 
@@ -153,7 +155,7 @@ def merge(args):
     if args.sort:
         src_wrps.sort(key=make_key_func(args.sort))
 
-    result_wrp = NiftiWrapper.from_sequence(src_wrps, args.dimension)
+    result_wrp = NiftiWrapper.from_sequence(src_wrps, args.dimension, args.sort)
 
     if args.clear_slices:
         result_wrp.meta_ext.clear_slice_meta()
@@ -169,7 +171,6 @@ def dump(args):
     meta_str = src_wrp.meta_ext.to_json()
     args.dest_json.write(meta_str)
     args.dest_json.write('\n')
-
     if args.remove:
         src_wrp.remove_extension()
         src_wrp.to_filename(args.src_nii[0])
@@ -183,19 +184,19 @@ def check_overwrite():
     return usr_input == 'y'
 
 def embed(args):
+    ext = DcmMetaExtension.from_json(args.src_json.read())
     dest_nii = nb.load(args.dest_nii[0])
-    hdr = dest_nii.header
     try:
-        src_wrp = NiftiWrapper(dest_nii, False)
+        nw = NiftiWrapper(dest_nii, False)
     except MissingExtensionError:
-        pass
+        hdr = dest_nii.header
     else:
         if not args.force_overwrite:
             if not check_overwrite():
                 return
-        src_wrp.remove_extension()
-
-    hdr.extensions.append(DcmMetaExtension.from_json(args.src_json.read()))
+        nw.remove_extension()
+        hdr = nw.nii_img.header
+    hdr.extensions.append(ext)
     nb.save(dest_nii, args.dest_nii[0])
     return 0
 

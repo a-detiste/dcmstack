@@ -16,7 +16,7 @@ ureg = pint.UnitRegistry()
 @dataclass(frozen=True)
 class SrcAttr:
     """A source attribute used to produce normalized attributes"""
-    name: Union[str, Tuple[str]]
+    name: Union[str, Tuple[str, ...]]
 
     units: Optional[pint.Quantity] = None
 
@@ -78,6 +78,7 @@ class SndAttr:
 # Define the normalized attributes
 SND_ATTRS = [
     SndAttr("AcquisitionDescription"),
+    SndAttr("ImageType"),
     SndAttr("AcquisitionTimeStamp", ureg.seconds),
     SndAttr("AcquisitionTimeStampSources"),
     SndAttr("FlipAngle", ureg.degrees, "FA"),
@@ -186,6 +187,17 @@ def get_acq_descr(meta: DcmMetaExtension):
     return (None, None)
 
 
+def get_image_type(meta: DcmMetaExtension):
+    gmeta = meta.get_class_dict(("global", "const"))
+    res = gmeta.get("ImageType", [])
+    for add_type in gmeta.get("SIEMENS_MR_SDI_02.0X75", []):
+        if add_type not in res:
+            res.append(add_type)
+    if not res:
+        return (None, None)
+    return (res, ("global", "const"))
+
+
 def get_acq_ts(meta: DcmMetaExtension):
     srcs = []
     # The "FrameReferenceDateTime" is the ideal source, as it should correspond to the
@@ -240,7 +252,7 @@ def get_acq_ts(meta: DcmMetaExtension):
 
 
 GEN_ATTRS = ParseGroup(
-    [
+    (
         MetaNorm(
             "AcquisitionDescription", ("SeriesDescription", "ProtocolName"), get_acq_descr
         ),
@@ -248,19 +260,20 @@ GEN_ATTRS = ParseGroup(
             ("AcquisitionTimeStamp", "AcquisitionTimeStampSources"), 
             ("AcquisitionTime", "AcquisitionDate", "AcquisitionDateTime", "MosaicRefAcqTimes"),
             get_acq_ts,
-        )
-    ]
+        ),
+        MetaNorm("ImageType", ("ImageType", "SIEMENS_MR_SDI_02.OX75"))
+    )
 )
 
 
 MR_ATTRS = ParseGroup(
-    [
+    (
         "FlipAngle",
         "RepetitionTime",
         "EchoTime",
         "InversionTime",
         "DiffusionBValue",
-    ],
+    ),
     lambda meta: meta.get_values("Modality") == "MR"
 )
 

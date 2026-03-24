@@ -236,13 +236,11 @@ def parse_phoenix_prot(prot_key, prot_val):
     ascconv_start = prot_val.find('### ASCCONV BEGIN ')
     ascconv_end = prot_val.find('### ASCCONV END ###')
     ascconv = prot_val[ascconv_start:ascconv_end].split('\n')[1:-1]
-
     result = {}
     for line in ascconv:
         parse_result = _parse_phoenix_line(line, str_delim)
         if parse_result:
             result[parse_result[0]] = parse_result[1]
-
     return result
 
 
@@ -274,6 +272,16 @@ csa_series_trans = Translator('CsaSeries',
 '''Translator for parsing the CSA series sub header.'''
 
 
+def xa_phoenix_trans_func(elem):
+    print(elem)
+    return parse_phoenix_prot("MrPhoenixProtocol", elem.value.decode())
+
+
+xa_phoenix_trans = Translator(
+    'MrPhoenixProtocol', pydicom.tag.Tag(0x21, 0x1119), 'SIEMENS MR SDS 01', xa_phoenix_trans_func
+)
+
+
 def tag_to_str(tag):
     '''Convert a DICOM tag to a string representation using the group and
     element hex values seprated by an underscore.'''
@@ -297,14 +305,17 @@ the struct.unpack function.'''
 class TextConverter:
     """Converter for byte strings tries to convert to text or returns None"""
     def prep_dataset(self, ds: pydicom.Dataset):
-        self.charset = ds._character_set
+        self.encodings = pydicom.charset.convert_encodings(ds._character_set)
 
     def __call__(self, val):
-        for encoding in self.charset:
-            try:
-                return val.decode(encoding)
-            except:
-                pass
+        if isinstance(val, str):
+            return val
+        elif isinstance(val, bytes):
+            for encoding in self.encodings:
+                try:
+                    return val.decode(encoding)
+                except:
+                    pass
 
 
 _get_text = TextConverter()
@@ -335,9 +346,10 @@ class MetaExtractor(object):
 
     IGNORE_RULES = IGNORE_BINARY_RULES + (make_ignore_unknown_private(),)
 
-    TRANSLATORS = (csa_image_trans, csa_series_trans,)
+    TRANSLATORS = (csa_image_trans, csa_series_trans, xa_phoenix_trans)
 
     CONVERSIONS = {
+        'PN' : str,
         'DS' : float,
         'IS' : int,
         'AT' : tag_to_str,

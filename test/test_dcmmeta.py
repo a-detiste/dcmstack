@@ -16,6 +16,8 @@ except ImportError:
 from . import test_dir, src_dir
 
 from dcmstack import dcmmeta
+from dcmstack import nifti_wrapper
+
 
 def test_is_constant():
     assert(dcmmeta.is_constant([0]))
@@ -824,16 +826,16 @@ def test_from_sequence_no_slc():
 
 def test_nifti_wrapper_init():
     nii = nb.Nifti1Image(np.zeros((5, 5, 5)), np.eye(4))
-    with pytest.raises(dcmmeta.MissingExtensionError):
-        dcmmeta.NiftiWrapper(nii)
+    with pytest.raises(nifti_wrapper.MissingExtensionError):
+        nifti_wrapper.NiftiWrapper(nii)
     hdr = nii.header
     ext = dcmmeta.DcmMetaExtension.make_empty((5, 5, 5), np.eye(4))
     hdr.extensions.append(ext)
-    nw = dcmmeta.NiftiWrapper(nii)
+    nw = nifti_wrapper.NiftiWrapper(nii)
     assert nw.meta_ext == ext
 
     nii2 = nb.Nifti1Image(np.zeros((5, 5, 5)), np.eye(4))
-    nw2 = dcmmeta.NiftiWrapper(nii, True)
+    nw2 = nifti_wrapper.NiftiWrapper(nii, True)
     ext2 = nw2.meta_ext
     assert ext == ext2
 
@@ -842,7 +844,7 @@ class TestMetaValid(object):
         nii = nb.Nifti1Image(np.zeros((5, 5, 5, 7, 9)), np.eye(4))
         hdr = nii.header
         hdr.set_dim_info(None, None, 2)
-        self.nw = dcmmeta.NiftiWrapper(nii, True)
+        self.nw = nifti_wrapper.NiftiWrapper(nii, True)
         for classes in self.nw.meta_ext.get_valid_classes():
             assert(self.nw.meta_valid(classes))
 
@@ -896,7 +898,7 @@ class TestGetMeta(object):
         nii = nb.Nifti1Image(np.zeros((5, 5, 5, 7, 9)), np.eye(4))
         hdr = nii.header
         hdr.set_dim_info(None, None, 2)
-        self.nw = dcmmeta.NiftiWrapper(nii, True)
+        self.nw = nifti_wrapper.NiftiWrapper(nii, True)
 
         #Add an element to every classification
         for classes in self.nw.meta_ext.get_valid_classes():
@@ -976,7 +978,7 @@ class TestSplit(object):
         nii = nb.Nifti1Image(self.arr, np.diag([1.1, 1.1, 1.1, 1.0]))
         hdr = nii.header
         hdr.set_dim_info(None, None, 2)
-        self.nw = dcmmeta.NiftiWrapper(nii, True)
+        self.nw = nifti_wrapper.NiftiWrapper(nii, True)
 
         #Add an element to every classification
         for classes in self.nw.meta_ext.get_valid_classes():
@@ -1027,7 +1029,7 @@ class TestSplit(object):
 def test_split_keep_spatial():
     arr = np.arange(3 * 3 * 3, dtype=np.int32).reshape(3, 3, 3)
     nii = nb.Nifti1Image(arr, np.eye(4))
-    nw = dcmmeta.NiftiWrapper(nii, True)
+    nw = nifti_wrapper.NiftiWrapper(nii, True)
 
     for split_idx, nw_split in enumerate(nw.split(2)):
         assert nw_split.nii_img.shape == (3, 3, 1)
@@ -1042,7 +1044,7 @@ def test_from_dicom():
     src_dcm = pydicom.dcmread(src_fn)
     src_dw = nb.nicom.dicomwrappers.wrapper_from_data(src_dcm)
     meta = {'EchoTime': 40}
-    nw = dcmmeta.NiftiWrapper.from_dicom(src_dcm, meta)
+    nw = nifti_wrapper.NiftiWrapper.from_dicom(src_dcm, meta)
     hdr = nw.nii_img.header
     assert nw.nii_img.shape == (192, 192, 1)
     assert(np.allclose(np.dot(np.diag([-1., -1., 1., 1.]), src_dw.affine),
@@ -1062,12 +1064,12 @@ def test_from_2d_slice_to_3d():
         hdr = nii.header
         hdr.set_dim_info(0, 1, 2)
         hdr.set_xyzt_units('mm', 'sec')
-        nw = dcmmeta.NiftiWrapper(nii, True)
+        nw = nifti_wrapper.NiftiWrapper(nii, True)
         nw.meta_ext.get_class_dict(('global', 'const'))['EchoTime'] = 40
         nw.meta_ext.get_class_dict(('global', 'const'))['SliceLocation'] = idx
         slice_nws.append(nw)
 
-    merged = dcmmeta.NiftiWrapper.from_sequence(slice_nws, 2)
+    merged = nifti_wrapper.NiftiWrapper.from_sequence(slice_nws, 2)
     assert merged.nii_img.shape == (4, 4, 3)
     assert(np.allclose(merged.nii_img.affine,
                     np.diag((1.1, 1.1, 0.5, 1.0)))
@@ -1094,7 +1096,7 @@ def test_from_3d_time_to_4d():
         hdr = nii.header
         hdr.set_dim_info(0, 1, 2)
         hdr.set_xyzt_units('mm', 'sec')
-        nw = dcmmeta.NiftiWrapper(nii, True)
+        nw = nifti_wrapper.NiftiWrapper(nii, True)
         const_meta = nw.meta_ext.get_class_dict(('global', 'const'))
         const_meta['PatientID'] = 'Test'
         const_meta['EchoTime'] = idx
@@ -1103,7 +1105,7 @@ def test_from_3d_time_to_4d():
         glb_slice_meta['AcquisitionTime'] = list(range(idx * 4, (idx + 1) * 4))
         time_nws.append(nw)
 
-    merged = dcmmeta.NiftiWrapper.from_sequence(time_nws, 3)
+    merged = nifti_wrapper.NiftiWrapper.from_sequence(time_nws, 3)
     assert merged.nii_img.shape == (4, 4, 4, 3)
     assert(np.allclose(merged.nii_img.affine,
                     np.diag((1.1, 1.1, 1.1, 1.0)))
@@ -1134,7 +1136,7 @@ def test_from_3d_vector_to_4d():
         hdr = nii.header
         hdr.set_dim_info(0, 1, 2)
         hdr.set_xyzt_units('mm', 'sec')
-        nw = dcmmeta.NiftiWrapper(nii, True)
+        nw = nifti_wrapper.NiftiWrapper(nii, True)
         const_meta = nw.meta_ext.get_class_dict(('global', 'const'))
         const_meta['PatientID'] = 'Test'
         const_meta['EchoTime'] = idx
@@ -1143,7 +1145,7 @@ def test_from_3d_vector_to_4d():
         glb_slice_meta['AcquisitionTime'] = list(range(idx * 4, (idx + 1) * 4))
         vector_nws.append(nw)
 
-    merged = dcmmeta.NiftiWrapper.from_sequence(vector_nws, 4)
+    merged = nifti_wrapper.NiftiWrapper.from_sequence(vector_nws, 4)
     assert merged.nii_img.shape == (4, 4, 4, 1, 3)
     assert(np.allclose(merged.nii_img.affine,
                     np.diag((1.1, 1.1, 1.1, 1.0)))
@@ -1180,10 +1182,10 @@ def test_merge_inconsistent_hdr():
         else:
             hdr.set_dim_info(0, 1, 2)
             hdr.set_xyzt_units('mm', 'sec')
-        nw = dcmmeta.NiftiWrapper(nii, True)
+        nw = nifti_wrapper.NiftiWrapper(nii, True)
         time_nws.append(nw)
 
-    merged = dcmmeta.NiftiWrapper.from_sequence(time_nws)
+    merged = nifti_wrapper.NiftiWrapper.from_sequence(time_nws)
     merged_hdr = merged.nii_img.header
     assert merged_hdr.get_dim_info() == (None, None, 2)
     assert merged_hdr.get_xyzt_units(), ('mm', 'unknown')
@@ -1201,7 +1203,7 @@ def test_merge_with_slc_and_without():
         if idx == 0:
             hdr.set_dim_info(0, 1, 2)
         hdr.set_xyzt_units('mm', 'sec')
-        nw = dcmmeta.NiftiWrapper(nii, True)
+        nw = nifti_wrapper.NiftiWrapper(nii, True)
         const_meta = nw.meta_ext.get_class_dict(('global', 'const'))
         const_meta['PatientID'] = 'Test'
         const_meta['EchoTime'] = idx
@@ -1210,7 +1212,7 @@ def test_merge_with_slc_and_without():
             glb_slice_meta['SliceLocation'] = list(range(4))
         input_nws.append(nw)
 
-    merged = dcmmeta.NiftiWrapper.from_sequence(input_nws)
+    merged = nifti_wrapper.NiftiWrapper.from_sequence(input_nws)
     assert merged.nii_img.shape == (4, 4, 4, 3)
     assert(np.allclose(merged.nii_img.affine,
                     np.diag((1.1, 1.1, 1.1, 1.0)))

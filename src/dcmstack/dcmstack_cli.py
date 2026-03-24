@@ -1,15 +1,14 @@
 """Command line interface to dcmstack."""
-from __future__ import print_function
-
 import os, sys, argparse, string
 from glob import glob
+from datetime import datetime
 
 import pydicom
 
 from . import dcmstack
 from .extract import ExtractionLevel, EXTRACTORS
 from .dcmstack import parse_and_group, stack_group, DicomOrdering, DEFAULT_GROUP_KEYS
-from .dcmmeta import NiftiWrapper
+from .nifti_wrapper import NiftiWrapper
 from .utils import iteritems, ascii_letters, pdb_except_hook
 from . import extract
 from .info import __version__
@@ -51,14 +50,35 @@ def sanitize_path_comp(path_comp):
     return ''.join(result)
 
 
+def _gen_src_batches(args):
+    res = []
+    for src in args.srcs:
+        if not os.path.isdir(src):
+            if not args.combine_srcs:
+                yield src, [src]
+            else:
+                res.append(src)
+        else:
+            glob_str = os.path.join(src, '*')
+            if args.file_ext:
+                glob_str += args.file_ext
+            if not args.combine_srcs:
+                yield src, glob(glob_str)
+            else:
+                res += glob(glob_str)
+    if res:
+        yield "combined", res
+
+
 def main(argv=sys.argv):
     #Handle command line options
     arg_parser = argparse.ArgumentParser(description=prog_descrip,
                                          epilog=prog_epilog)
-    arg_parser.add_argument('src_dirs', nargs='*', help=('The source '
-                            'directories containing DICOM files.'))
+    arg_parser.add_argument('srcs', nargs='*', help=('The source files / dirs'))
 
     input_opt = arg_parser.add_argument_group('Input options')
+    input_opt.add_argument('-c', '--combine-srcs', action='store_true', 
+                           help=("Combine all 'srcs' instead of processing individually"))
     input_opt.add_argument('--force-read', action='store_true', default=False,
                            help=('Try reading all files as DICOM, even if they '
                            'are missing the preamble.'))
@@ -178,6 +198,8 @@ def main(argv=sys.argv):
         for regex in dcmstack.default_key_incl_res:
             print('\t' + regex)
         return 0
+    if len(args.srcs) == 0:
+        arg_parser.error('No sources were provided')
     # If we are generating meta data setup the extractors, otherwise use minimal one
     gen_meta = args.embed_meta or args.dump_meta
     if gen_meta:
@@ -200,7 +222,7 @@ def main(argv=sys.argv):
     if args.exclude_regex:
         exclude_regexes += args.exclude_regex
     meta_filter = dcmstack.make_key_regex_filter(exclude_regexes, include_regexes)
-    #Figure out time and vector ordering
+    # Figure out time and vector ordering
     if args.time_var:
         if args.time_order:
             order_file = open(args.time_order)
@@ -221,91 +243,79 @@ def main(argv=sys.argv):
             vector_order = DicomOrdering(args.vector_var)
     else:
         vector_order = None
-
-    if len(args.src_dirs) == 0:
-        arg_parser.error('No source directories were provided.')
-
     #Handle group-by option
     if not args.group_by is None:
         group_by = args.group_by.split(',')
     else:
         group_by = DEFAULT_GROUP_KEYS
 
-    #Handle each source directory individually
-    for src_dir in args.src_dirs:
-        if not os.path.isdir(src_dir):
-            print('%s is not a directory, skipping' % src_dir, file=sys.stderr)
-
+    # Process files in batches
+    for src, src_paths in _gen_src_batches(args):
         if args.verbose:
-            print("Processing source directory %s" % src_dir)
-
-        #Build a list of paths to source files
-        glob_str = os.path.join(src_dir, '*')
-        if args.file_ext:
-            glob_str += args.file_ext
-        src_paths = glob(glob_str)
-
-        if args.verbose:
-            print("Found %d source files in the directory" % len(src_paths))
-
-        #Group the files in this directory
+            print(f"Processing source ({len(src_paths)} files): {src}")
+            start = datetime.now()
+            src_start = start
+        # Group the files in this batch
         groups = parse_and_group(src_paths,
                                  group_by,
                                  extractor,
                                  args.force_read,
                                  not args.strict,
                                 )
-
         if args.verbose:
-            print("Found %d groups of DICOM images" % len(groups))
-
+            delta = datetime.now() - start
+            print(f"Parsed input files and found {len(groups)} group(s) of DICOM images (took {delta})")
         if len(groups) == 0:
-            print("No DICOM files found in %s" % src_dir)
-
+            print("No DICOM files found in %s" % src)
         out_idx = 0
         generated_outs = set()
         for key, group in iteritems(groups):
+            if args.verbose:
+                start = datetime.now()
             stack = stack_group(group,
                                 warn_on_except=not args.strict,
                                 time_order=time_order,
                                 vector_order=vector_order,
                                 meta_filter=meta_filter)
-            meta = group[0][1]
-
+            if args.verbose:
+                delta = datetime.now() - start
+                print(f"DicomStack creation took: {delta}")
+                start = datetime.now()
+            nii = stack.to_nifti(args.voxel_order, gen_meta)
+            if args.verbose:
+                delta = datetime.now() - start
+                print(f"Nifti creation took: {delta}")
+            meta = stack._files_info[0][0].meta_ext.get_class_dict(("global", "const"))
             #Build an appropriate output format string if none was specified
             if args.output_name is None:
                 out_fmt = []
                 if 'SeriesNumber' in meta:
                     out_fmt.append('%(SeriesNumber)03d')
-                if 'ProtocolName' in meta:
-                    out_fmt.append('%(ProtocolName)s')
-                elif 'SeriesDescription' in meta:
-                    out_fmt.append('%(SeriesDescription)s')
+                if 'SND.AcquisitionDescription' in meta:
+                    out_fmt.append('%(SND.AcquisitionDescription)s')
                 else:
                     out_fmt.append('series')
                 out_fmt = '-'.join(out_fmt)
             else:
                 out_fmt = args.output_name
-
-            #Get the output filename from the format string, make sure the
-            #result is unique for this source directory
+            # Get the output filename from the format string, make sure the result is 
+            # unique for this invocation
             out_fn = sanitize_path_comp(out_fmt % meta)
             if out_fn in generated_outs:
                 out_fn += '-%03d' % out_idx
             generated_outs.add(out_fn)
             out_idx += 1
             out_fn = out_fn + args.output_ext
-
             if args.dest_dir:
-                out_path = os.path.join(args.dest_dir, out_fn)
+                out_dir =args.dest_dir
             else:
-                out_path = os.path.join(src_dir, out_fn)
-
-            if args.verbose:
-                print("Writing out stack to path %s" % out_path)
-
-            nii = stack.to_nifti(args.voxel_order, gen_meta)
-
+                if src == 'combined':
+                    out_dir = args.srcs[0]
+                else:
+                    out_dir = src
+                if not out_dir.is_dir():
+                    out_dir = out_dir.parent
+            out_path = os.path.join(out_dir, out_fn)
             if args.dump_meta:
                 nii_wrp = NiftiWrapper(nii)
                 path_tokens = out_path.split('.')
@@ -314,17 +324,22 @@ def main(argv=sys.argv):
                 if path_tokens[-1] == 'nii':
                     path_tokens = path_tokens[:-1]
                 meta_path = '.'.join(path_tokens + ['json'])
+                if args.verbose:
+                    print(f"Dumping meta data to external JSON: {meta_path}")
                 out_file = open(meta_path, 'w')
                 out_file.write(nii_wrp.meta_ext.to_json())
                 out_file.close()
-
                 if not args.embed_meta:
                     nii_wrp.remove_extension()
-
                 del nii_wrp
-
+            if args.verbose:
+                print("Writing out stack to path %s" % out_path)
+                start = datetime.now()
             nii.to_filename(out_path)
-
+            if args.verbose:
+                end = datetime.now()
+                print(f"Writing / compression took: {end - start}")
+                print(F"Total conversion for source took: {end - src_start}")
             del key
             del group
             del stack
